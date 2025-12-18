@@ -1,0 +1,119 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter1d  # для сглаживания
+
+# ==============================
+# 1. ЗАГРУЗКА ДАННЫХ
+# ==============================
+
+FILE_PATH = "/content/drive/MyDrive/Google Диск/Магистратура/3 Семестр/Курсовая работа/2025-03-20_18-17-32_266_rcms.csv"
+ROW_LIMIT = 25000
+
+df = pd.read_csv(FILE_PATH)
+
+if ROW_LIMIT is not None:
+    df = df.iloc[:ROW_LIMIT]
+
+required_columns = ["TIME_s", "BASE_1_Ω"]
+for col in required_columns:
+    if col not in df.columns:
+        raise KeyError(f"Нет столбца {col}")
+
+time = df["TIME_s"].to_numpy(dtype=float)
+base = df["BASE_1_Ω"].to_numpy(dtype=float)
+
+# ==============================
+# 1.1 СГЛАЖИВАНИЕ СИГНАЛА
+# ==============================
+# Можно регулировать sigma для степени сглаживания
+sigma = 11  # чем больше sigma, тем сильнее сглаживание
+base_smoothed = gaussian_filter1d(base, sigma=sigma)
+
+# ==============================
+# 2. ПОИСК ЛОКАЛЬНЫХ МИНИМУМОВ
+# ==============================
+
+def find_local_minima(signal):
+    idx = []
+    n = len(signal)
+
+    if signal[0] <= signal[1]:
+        idx.append(0)
+
+    for i in range(1, n - 1):
+        if signal[i] <= signal[i - 1] and signal[i] <= signal[i + 1]:
+            idx.append(i)
+
+    if signal[-1] <= signal[-2]:
+        idx.append(n - 1)
+
+    return idx
+
+minima_idx = find_local_minima(base_smoothed)
+
+# защита от плохой детекции
+if minima_idx[0] != 0:
+    minima_idx.insert(0, 0)
+if minima_idx[-1] != len(base) - 1:
+    minima_idx.append(len(base) - 1)
+
+# ==============================
+# 3. НОВЫЙ АЛГОРИТМ ВЫЧИТАНИЯ С ПЛАВНЫМ МАССШТАБИРОВАНИЕМ
+# ==============================
+
+base_shifted = np.zeros_like(base, dtype=float)
+
+for i in range(len(minima_idx) - 1):
+    left_min = minima_idx[i]
+    right_min = minima_idx[i + 1]
+
+    segment = base[left_min:right_min + 1]
+
+    # максимум внутри сегмента
+    max_idx_local = np.argmax(segment)
+    max_idx = left_min + max_idx_local
+
+    # разности от минимума до максимума
+    delta_left = base[max_idx] - base[left_min]
+    delta_right = base[max_idx] - base[right_min]
+
+    # среднее значение для максимума
+    delta_avg = (delta_left + delta_right) / 2
+
+    # коэффициенты для масштабирования
+    K1 = delta_avg / delta_left if delta_left != 0 else 1.0
+    K2 = delta_avg / delta_right if delta_right != 0 else 1.0
+
+    # левая часть: от левого минимума до максимума
+    base_shifted[left_min:max_idx + 1] = (base[left_min:max_idx + 1] - base[left_min]) * K1
+
+    # правая часть: от максимума до правого минимума
+    base_shifted[max_idx:right_min + 1] = (base[max_idx:right_min + 1] - base[right_min]) * K2
+
+# ==============================
+# 4. ВИЗУАЛИЗАЦИЯ
+# ==============================
+
+plt.figure(figsize=(20, 4))
+plt.plot(time, base, label="BASE_1_Ω (оригинал)")
+plt.plot(time, base_smoothed, label="BASE_1_Ω (сглаженный)", linewidth=2)
+plt.scatter(time[minima_idx], base[minima_idx],
+            color="red", s=25, label="минимумы")
+plt.xlabel("TIME_s")
+plt.ylabel("Импеданс")
+plt.title("Оригинальный сигнал и сглаженный")
+plt.legend()
+plt.grid(True)
+
+plt.figure(figsize=(20, 4))
+plt.plot(time, base_shifted, label="BASE_1_Ω (раздельное вычитание)")
+plt.scatter(time[minima_idx], base_shifted[minima_idx],
+            color="red", s=25)
+plt.xlabel("TIME_s")
+plt.ylabel("Импеданс")
+plt.title("Минимумы приведены к нулю (по сторонам максимума)")
+plt.legend()
+plt.grid(True)
+
+plt.show()
